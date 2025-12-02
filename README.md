@@ -11,7 +11,7 @@ All AI requests are made **directly from the browser** using:
 - **OpenRouter multi-provider** (Claude / GPT-4o / DeepSeek / Grok / Qwen / Free Gemini)
 
 🔗 **Live Demo:** https://seeb4coding.in/ai/pic-2-code/  
-🔗 **GitHub Repository:** https://github.com/your-username/ai-pic2code  
+🔗 **GitHub Repository:** https://github.com/seeb4coding/pic-2-code
 
 ---
 
@@ -113,7 +113,7 @@ AI-PIC2CODE
 ### 1️⃣ Clone the Project
 
 ```bash
-git clone https://github.com/your-username/ai-pic2code.git
+git clone https://github.com/seeb4coding/pic-2-code
 cd ai-pic2code
 ```
 
