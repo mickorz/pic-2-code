@@ -1,0 +1,5 @@
+{
+  "name": "Pic2Code",
+  "description": "Convert UI screenshots and mockups into production-ready React + Tailwind CSS code using Gemini 2.5.",
+  "requestFramePermissions": []
+}
