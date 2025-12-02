@@ -101,7 +101,7 @@ AI-PIC2CODE
 ```bash
 git clone https://github.com/your-username/ai-pic2code.git
 cd ai-pic2code
-
+bash```
 2️⃣ Install Dependencies
 npm install
 
