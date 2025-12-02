@@ -158,18 +158,6 @@ export const AVAILABLE_MODELS = [
 
 ---
 
-## 🔌 AI Dispatcher
-
-```ts
-export async function generateAIResponse(modelId, base64, framework) {
-  const isGemini = modelId.startsWith("gemini");
-  if (isGemini) return await callGemini(modelId, base64, framework);
-  return await callOpenRouter(modelId, base64, framework);
-}
-```
-
----
-
 ## 🧪 Run Locally
 
 ```bash
