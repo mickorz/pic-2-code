@@ -116,7 +116,7 @@ Get API keys:
 Gemini → https://aistudio.google.com
 OpenRouter → https://openrouter.ai
 
-🌐 Model Selection in Settings
+## 🌐 Model Selection in Settings
 Your app includes this model list:
 export const AVAILABLE_MODELS = [
   { id: 'gemini-3-pro', name: 'Gemini 3.0 Pro', provider: 'gemini' },
@@ -136,7 +136,7 @@ export const AVAILABLE_MODELS = [
   { id: 'qwen/qwen-2.5-vl-72b-instruct:free', name: 'Qwen 2.5 VL 72B (Free)', provider: 'openrouter' },
 ];
 
-🔌 AI Service Logic
+##🔌 AI Service Logic
   A single dispatcher decides which service to call:
   export async function generateAIResponse(modelId, base64, framework) {
     const isGemini = modelId.startsWith("gemini");
@@ -157,7 +157,7 @@ Open:
   npm run build
   npm run preview
 
-🛣️ Roadmap
+## 🛣️ Roadmap
   ⬜ Vue.js output
   ⬜ Angular output
   ⬜ ZIP export (image + code)
@@ -165,19 +165,19 @@ Open:
   ⬜ Custom Tailwind theme generator
   ⬜ AI-based code cleanup
 
-🤝 Contributing
+## 🤝 Contributing
   Fork the repo
   Create a branch
   Commit changes
   Open a pull request
 
-📜 License
+## 📜 License
 MIT License — free for personal and commercial use.
 
-👨‍💻 Author
-seeb4coding.in
-📧 Email: support@seeb4coding.in
-🌐 Website: https://seeb4coding.in
+## 👨‍💻 Author
+  seeb4coding.in
+  📧 Email: support@seeb4coding.in
+  🌐 Website: https://seeb4coding.in
 
-⭐ Support
-If this project helped you, consider supporting with a GitHub Star ⭐
+## ⭐ Support
+  If this project helped you, consider supporting with a GitHub Star ⭐
