@@ -1,5 +1,5 @@
 
-# 🚀 AI Pic2Code – Image → Code Generator  
+# 🚀 AI Pic 2 Code – Image → Code Generator  
 ### *(Frontend-Only | React + TypeScript | Multi-Model AI Support)*
 
 **AI Pic2Code** is a **free, open-source**, 100% **frontend-only** AI tool that converts UI screenshots into clean, production-ready code.
