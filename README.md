@@ -188,9 +188,10 @@ npm run preview
 
 ---
 
-## ✅ Professional Version (Recommended for GitHub)
+## ✅ Google AI Studio
 
-AI Pic2Code is built using the Google AI Studio platform, leveraging the latest Gemini models (Gemini 3.0 Pro / 2.5 Pro / Flash models) for fast, accurate image-to-code conversion directly in the browser.
+This project was developed using Google AI Studio, which provides direct access to Gemini models through a browser-based API.
+All Gemini-powered features (HTML/Tailwind conversion, React generation, Flutter widgets, and React Native layout generation) are executed using Gemini models from AI Studio, without requiring any backend server.
 
 ## 👨‍💻 Author
 
