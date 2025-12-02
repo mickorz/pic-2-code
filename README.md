@@ -9,7 +9,7 @@ All AI requests are made **directly from the browser** using:
 - **Google Gemini 3 Pro** (recommended)  
 - **OpenRouter multi-provider** (Claude / GPT-4o / DeepSeek / Grok / Qwen / Free Gemini)
 
-🔗 **Live Demo:** https://uniqueindsolutions.com/ai/pic-2-code/  
+🔗 **Live Demo:** https://seeb4coding.in/ai/pic-2-code/  
 🔗 **GitHub Repository:** *(add link here)*  
 
 ---
