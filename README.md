@@ -1,3 +1,4 @@
+
 # 🚀 AI Pic2Code – Image → Code Generator  
 ### *(Frontend-Only | React + TypeScript | Multi-Model AI Support)*
 
@@ -10,23 +11,29 @@ All AI requests are made **directly from the browser** using:
 - **OpenRouter multi-provider** (Claude / GPT-4o / DeepSeek / Grok / Qwen / Free Gemini)
 
 🔗 **Live Demo:** https://seeb4coding.in/ai/pic-2-code/  
-🔗 **GitHub Repository:** *(add link here)*  
+🔗 **GitHub Repository:** https://github.com/your-username/ai-pic2code  
 
 ---
 
 ## ✨ Features
 
-### 🖼️ Convert Screenshot → Code
-Generate production-ready:
-- HTML + Tailwind CSS  
-- React (JSX + Tailwind)  
-- Flutter UI (Dart)  
-- React Native Components  
+### 🖼️ Screenshot → Code
+
+Generate production-ready UI code for:
+
+- **HTML + Tailwind CSS**  
+- **React** (JSX + Tailwind)  
+- **Flutter UI** (Dart)  
+- **React Native Components**  
+
+---
 
 ### ⚙️ Multi-Provider AI Support  
-Choose models from Settings:
 
-#### **Google Gemini**
+Select your preferred model in **Settings**.
+
+#### 🔹 Google Gemini
+
 - Gemini 3.0 Pro  
 - Gemini 3.0 Pro Preview  
 - Gemini 2.5 Pro  
@@ -34,7 +41,8 @@ Choose models from Settings:
 - Gemini 2.5 Flash Thinking  
 - Gemini 2.0 Flash Lite  
 
-#### **OpenRouter**
+#### 🔹 OpenRouter
+
 - Gemini 2.0 Flash (Free)  
 - Gemini 2.0 Pro (Free)  
 - Claude 3.5 Sonnet  
@@ -44,42 +52,47 @@ Choose models from Settings:
 - Grok 4.1 Fast (Free)  
 - Qwen 2.5 VL 72B (Free)  
 
-### 🎨 UI Tools Included
-- Drag & Drop image upload  
+---
+
+## 🎨 Built-in UI Tools
+
+- Drag & drop image upload  
 - Image preview modal  
-- Code viewer with tabs  
+- Multi-tab code viewer  
 - Settings modal  
 - Color palette extraction  
 - Voice input  
 - Toast notifications  
 - Skeleton loader  
-- Dark/Light mode  
+- Dark / Light mode  
 
 ---
 
 ## 🧱 Project Structure
+
+```
 AI-PIC2CODE
 │
 ├── components/
-│ ├── Button.tsx
-│ ├── CodeViewer.tsx
-│ ├── ColorPalette.tsx
-│ ├── ExplainModal.tsx
-│ ├── Header.tsx
-│ ├── ImageModal.tsx
-│ ├── SettingsModal.tsx
-│ ├── SkeletonLoader.tsx
-│ ├── UploadZone.tsx
-│ └── VoiceInput.tsx
+│   ├── Button.tsx
+│   ├── CodeViewer.tsx
+│   ├── ColorPalette.tsx
+│   ├── ExplainModal.tsx
+│   ├── Header.tsx
+│   ├── ImageModal.tsx
+│   ├── SettingsModal.tsx
+│   ├── SkeletonLoader.tsx
+│   ├── UploadZone.tsx
+│   └── VoiceInput.tsx
 │
 ├── services/
-│ ├── gemini.service.ts
-│ └── openrouter.service.ts
+│   ├── gemini.service.ts
+│   └── openrouter.service.ts
 │
 ├── utils/
-│ ├── helpers.ts
-│ ├── image.ts
-│ └── format.ts
+│   ├── helpers.ts
+│   ├── image.ts
+│   └── format.ts
 │
 ├── App.tsx
 ├── constants.ts
@@ -91,33 +104,39 @@ AI-PIC2CODE
 ├── tsconfig.json
 ├── .env.local
 └── README.md
-
+```
 
 ---
 
 ## 📥 Installation
 
 ### 1️⃣ Clone the Project
+
 ```bash
 git clone https://github.com/your-username/ai-pic2code.git
 cd ai-pic2code
-bash```
-2️⃣ Install Dependencies
+```
+
+### 2️⃣ Install Dependencies
+
+```bash
 npm install
+```
 
-3️⃣ Add API Keys
+### 3️⃣ Add API Keys
 
-Create .env.local:
+Create a `.env.local` file:
 
-# Gemini API
-GEMINI_API_KEY=PLACEHOLDER_API_KEY
+```env
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
+OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY
+```
 
-Get API keys:
-Gemini → https://aistudio.google.com
-OpenRouter → https://openrouter.ai
+---
 
-## 🌐 Model Selection in Settings
-Your app includes this model list:
+## 🌐 Model List
+
+```ts
 export const AVAILABLE_MODELS = [
   { id: 'gemini-3-pro', name: 'Gemini 3.0 Pro', provider: 'gemini' },
   { id: 'gemini-3-pro-preview', name: 'Gemini 3.0 Pro Preview', provider: 'gemini' },
@@ -135,49 +154,59 @@ export const AVAILABLE_MODELS = [
   { id: 'x-ai/grok-4.1-fast:free', name: 'Grok 4.1 Fast (Free)', provider: 'openrouter' },
   { id: 'qwen/qwen-2.5-vl-72b-instruct:free', name: 'Qwen 2.5 VL 72B (Free)', provider: 'openrouter' },
 ];
+```
 
-##🔌 AI Service Logic
-  A single dispatcher decides which service to call:
-  export async function generateAIResponse(modelId, base64, framework) {
-    const isGemini = modelId.startsWith("gemini");
-  
-    if (isGemini)
-      return await callGemini(modelId, base64, framework);
-  
-    return await callOpenRouter(modelId, base64, framework);
-  }
+---
 
-🧪 Run the Project
-  npm run dev
+## 🔌 AI Dispatcher
 
-Open:
-  👉 http://localhost:5173
+```ts
+export async function generateAIResponse(modelId, base64, framework) {
+  const isGemini = modelId.startsWith("gemini");
+  if (isGemini) return await callGemini(modelId, base64, framework);
+  return await callOpenRouter(modelId, base64, framework);
+}
+```
 
-📦 Build for Production
-  npm run build
-  npm run preview
+---
+
+## 🧪 Run Locally
+
+```bash
+npm run dev
+```
+
+Visit: http://localhost:5173
+
+---
+
+## 📦 Build
+
+```bash
+npm run build
+npm run preview
+```
+
+---
 
 ## 🛣️ Roadmap
-  ⬜ Vue.js output
-  ⬜ Angular output
-  ⬜ ZIP export (image + code)
-  ⬜ Local history
-  ⬜ Custom Tailwind theme generator
-  ⬜ AI-based code cleanup
 
-## 🤝 Contributing
-  Fork the repo
-  Create a branch
-  Commit changes
-  Open a pull request
+- Vue.js output  
+- Angular output  
+- ZIP export  
+- Local history  
+- Custom Tailwind theme generator  
+- AI auto-cleanup  
 
-## 📜 License
-MIT License — free for personal and commercial use.
+---
 
 ## 👨‍💻 Author
-  seeb4coding.in
-  📧 Email: support@seeb4coding.in
-  🌐 Website: https://seeb4coding.in
 
-## ⭐ Support
-  If this project helped you, consider supporting with a GitHub Star ⭐
+seeb4coding.in  
+📧 support@seeb4coding.in  
+🌐 https://seeb4coding.in  
+
+---
+
+## ⭐ Support  
+Give a ⭐ on GitHub if you like this project!
