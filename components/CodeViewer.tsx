@@ -10,9 +10,12 @@ import * as Diff from 'diff';
 import Button from './Button';
 import { scanHTML } from '../utils/a11y';
 import { openInStackBlitz } from '../utils/stackblitz';
-import { convertHtmlToReact, convertHtmlToFlutter, convertHtmlToReactNative } from '../services/geminiService';
+import { convertHtmlToReact, convertHtmlToFlutter, convertHtmlToReactNative } from '../services/ai';
 import { generateProjectZip } from '../utils/zipGenerator';
 import { AppSettings } from '../types';
+
+const DEFAULT_CONVERSION_TIMEOUT_MS = 120000;
+const CODEX_CONVERSION_TIMEOUT_MS = 30 * 60 * 1000;
 
 interface CodeViewerProps {
   code: string;
@@ -59,6 +62,7 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
   const [isGeneratingReact, setIsGeneratingReact] = useState(false);
   const [isGeneratingFlutter, setIsGeneratingFlutter] = useState(false);
   const [isGeneratingReactNative, setIsGeneratingReactNative] = useState(false);
+  const [conversionError, setConversionError] = useState<string | null>(null);
   
   // React Native Sub-tab state
   const [rnPlatform, setRnPlatform] = useState<'expo' | 'cli'>('expo');
@@ -102,104 +106,112 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
     await generateProjectZip(code, reactCode || null, flutterCode || null, reactNativeExpoCode || null, reactNativeCliCode || null, extractedColors);
   };
 
-  const handleGenerateReact = async () => {
-    if (!code) return;
-    
-    // Stop React generation if already running
-    if (isGeneratingReact) {
-        if (reactAbortController.current) {
-            reactAbortController.current.abort();
-            reactAbortController.current = null;
-        }
-        setIsGeneratingReact(false);
-        return;
+  const getConversionTimeoutMs = () =>
+    settings.provider === 'codex-cli' ? CODEX_CONVERSION_TIMEOUT_MS : DEFAULT_CONVERSION_TIMEOUT_MS;
+
+  const runConversionTask = async ({
+    isRunning,
+    setIsRunning,
+    abortRef,
+    execute,
+    onSuccess,
+    timeoutMessage,
+    fallbackMessage,
+  }: {
+    isRunning: boolean;
+    setIsRunning: React.Dispatch<React.SetStateAction<boolean>>;
+    abortRef: React.MutableRefObject<AbortController | null>;
+    execute: (signal: AbortSignal) => Promise<string>;
+    onSuccess: (cleanedCode: string) => void;
+    timeoutMessage: string;
+    fallbackMessage: string;
+  }) => {
+    if (isRunning) {
+      if (abortRef.current) {
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
+      setIsRunning(false);
+      return;
     }
 
-    setIsGeneratingReact(true);
+    setConversionError(null);
+    setIsRunning(true);
     const controller = new AbortController();
-    reactAbortController.current = controller;
+    abortRef.current = controller;
+    const timeoutMs = getConversionTimeoutMs();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
 
     try {
-      const result = await convertHtmlToReact(code, settings, controller.signal);
-      const cleaned = result.replace(/^```(javascript|jsx|tsx)?/, '').replace(/```$/, '').trim();
-      onReactCodeChange(cleaned);
+      const result = await execute(controller.signal);
+      const cleaned = result.replace(/^```(javascript|typescript|jsx|tsx|dart)?/, '').replace(/```$/, '').trim();
+      onSuccess(cleaned);
       setTimeout(() => Prism.highlightAll(), 100);
     } catch (e: any) {
       if (e.name !== 'AbortError') {
+        const message = e instanceof Error && e.message ? e.message : fallbackMessage;
         console.error(e);
+        setConversionError(message);
+      } else if (timedOut) {
+        setConversionError(timeoutMessage);
       }
     } finally {
-      setIsGeneratingReact(false);
-      reactAbortController.current = null;
+      clearTimeout(timeout);
+      setIsRunning(false);
+      abortRef.current = null;
     }
+  };
+
+  const handleGenerateReact = async () => {
+    if (!code) return;
+
+    await runConversionTask({
+      isRunning: isGeneratingReact,
+      setIsRunning: setIsGeneratingReact,
+      abortRef: reactAbortController,
+      execute: (signal) => convertHtmlToReact(code, settings, signal),
+      onSuccess: onReactCodeChange,
+      timeoutMessage: 'React 转换超时，请稍后重试。',
+      fallbackMessage: 'React 转换失败。',
+    });
   };
 
   const handleGenerateFlutter = async () => {
     if (!code) return;
 
-    // Stop Flutter generation if already running
-    if (isGeneratingFlutter) {
-        if (flutterAbortController.current) {
-            flutterAbortController.current.abort();
-            flutterAbortController.current = null;
-        }
-        setIsGeneratingFlutter(false);
-        return;
-    }
-
-    setIsGeneratingFlutter(true);
-    const controller = new AbortController();
-    flutterAbortController.current = controller;
-
-    try {
-      const result = await convertHtmlToFlutter(code, settings, controller.signal);
-      const cleaned = result.replace(/^```(dart)?/, '').replace(/```$/, '').trim();
-      onFlutterCodeChange(cleaned);
-      setTimeout(() => Prism.highlightAll(), 100);
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-         console.error(e);
-      }
-    } finally {
-      setIsGeneratingFlutter(false);
-      flutterAbortController.current = null;
-    }
+    await runConversionTask({
+      isRunning: isGeneratingFlutter,
+      setIsRunning: setIsGeneratingFlutter,
+      abortRef: flutterAbortController,
+      execute: (signal) => convertHtmlToFlutter(code, settings, signal),
+      onSuccess: onFlutterCodeChange,
+      timeoutMessage: 'Flutter 转换超时，请稍后重试。',
+      fallbackMessage: 'Flutter 转换失败。',
+    });
   };
 
   const handleGenerateReactNative = async () => {
     if (!code) return;
 
-    // Stop RN generation if already running
-    if (isGeneratingReactNative) {
-        if (reactNativeAbortController.current) {
-            reactNativeAbortController.current.abort();
-            reactNativeAbortController.current = null;
+    await runConversionTask({
+      isRunning: isGeneratingReactNative,
+      setIsRunning: setIsGeneratingReactNative,
+      abortRef: reactNativeAbortController,
+      execute: (signal) => convertHtmlToReactNative(code, settings, signal, rnPlatform),
+      onSuccess: (cleaned) => {
+        if (rnPlatform === 'expo') {
+          onReactNativeExpoCodeChange(cleaned);
+        } else {
+          onReactNativeCliCodeChange(cleaned);
         }
-        setIsGeneratingReactNative(false);
-        return;
-    }
-
-    setIsGeneratingReactNative(true);
-    const controller = new AbortController();
-    reactNativeAbortController.current = controller;
-
-    try {
-      const result = await convertHtmlToReactNative(code, settings, controller.signal, rnPlatform);
-      const cleaned = result.replace(/^```(javascript|typescript|jsx|tsx)?/, '').replace(/```$/, '').trim();
-      if (rnPlatform === 'expo') {
-        onReactNativeExpoCodeChange(cleaned);
-      } else {
-        onReactNativeCliCodeChange(cleaned);
-      }
-      setTimeout(() => Prism.highlightAll(), 100);
-    } catch (e: any) {
-      if (e.name !== 'AbortError') {
-         console.error(e);
-      }
-    } finally {
-      setIsGeneratingReactNative(false);
-      reactNativeAbortController.current = null;
-    }
+      },
+      timeoutMessage: 'React Native 转换超时，请稍后重试。',
+      fallbackMessage: 'React Native 转换失败。',
+    });
   };
 
   const renderDiff = () => {
@@ -374,6 +386,12 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
           </Button>
         </div>
       </div>
+
+      {conversionError && (
+        <div className="px-4 py-2 text-sm text-red-300 bg-red-500/10 border-b border-red-500/20">
+          {conversionError}
+        </div>
+      )}
       
       <div className="relative flex-1 overflow-hidden group bg-[#0d1117] flex flex-col">
         {/* Sub-navigation for React Native */}

@@ -380,7 +380,7 @@ export const WIREFRAME_SCRIPT = `
 export interface ModelDefinition {
   id: string;
   name: string;
-  provider: 'gemini' | 'openrouter';
+  provider: 'gemini' | 'openrouter' | 'claude-agent' | 'codex-cli';
 }
 
 export const AVAILABLE_MODELS: ModelDefinition[] = [
@@ -401,4 +401,14 @@ export const AVAILABLE_MODELS: ModelDefinition[] = [
   { id: 'openai/gpt-4o', name: 'GPT-4o', provider: 'openrouter' },
   { id: 'x-ai/grok-4.1-fast:free', name: 'Grok 4.1 Fast (Free)', provider: 'openrouter' },
   { id: 'qwen/qwen-2.5-vl-72b-instruct:free', name: 'Qwen 2.5 VL 72B (Free)', provider: 'openrouter' },
+
+  // Claude Agent SDK Models
+  { id: 'default', name: 'Default (Recommended)', provider: 'claude-agent' },
+  { id: 'sonnet[1m]', name: 'Sonnet (1M Context)', provider: 'claude-agent' },
+  { id: 'opus[1m]', name: 'Opus (1M Context)', provider: 'claude-agent' },
+  { id: 'haiku', name: 'Haiku', provider: 'claude-agent' },
+
+  // Codex CLI Models
+  { id: 'gpt-5.3-codex', name: 'gpt-5.3-codex', provider: 'codex-cli' },
+  { id: 'gpt-5.4', name: 'gpt-5.4', provider: 'codex-cli' },
 ];

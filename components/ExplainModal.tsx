@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { X, BookOpen, Layers, Palette, MousePointer } from 'lucide-react';
-import { CodeExplanation } from '../services/geminiService';
+import { CodeExplanation } from '../services/ai';
 
 interface ExplainModalProps {
   isOpen: boolean;

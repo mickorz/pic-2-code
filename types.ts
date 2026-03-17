@@ -25,7 +25,7 @@ export interface HistoryItem {
   prompt: string;
 }
 
-export type AiProvider = 'gemini' | 'openrouter';
+export type AiProvider = 'gemini' | 'openrouter' | 'claude-agent' | 'codex-cli';
 
 export interface AppSettings {
   temperature: number;

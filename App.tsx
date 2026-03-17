@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Wand2, AlertCircle, Eye, Code, Smartphone, Tablet, Monitor, Clock, Trash2, RotateCcw, Sparkles, SlidersHorizontal, ExternalLink, Send, MessageSquare, Download, Upload, Play, Pause, Settings, MousePointer2, Palette, Edit3, ChevronDown, Grid3X3, Layers, Square } from 'lucide-react';
-import confetti from 'canvas-confetti';
 import Header from './components/Header';
 import UploadZone from './components/UploadZone';
 import CodeViewer from './components/CodeViewer';
@@ -15,9 +14,15 @@ import ImageModal from './components/ImageModal';
 import ExplainModal from './components/ExplainModal';
 import VoiceInput from './components/VoiceInput';
 import ColorPalette from './components/ColorPalette';
+import ProcessingLogPanel, { ProcessingLogItem } from './components/ProcessingLogPanel';
 import SettingsModal from './components/SettingsModal';
 import Toast, { ToastType } from './components/Toast';
-import { generateCode, refineCode, explainCode, CodeExplanation } from './services/geminiService';
+import {
+  explainCode,
+  streamGenerateCode,
+  streamRefineCode,
+  CodeExplanation,
+} from './services/ai';
 import { extractColors } from './utils/colorExtractor';
 import { AppStatus, ImageFile, HistoryItem, AppSettings } from './types';
 import { generateShareUrl, loadFromShareUrl } from './utils/share';
@@ -31,6 +36,40 @@ const SUGGESTIONS = [
   "Mobile First",
   "Glassmorphism"
 ];
+
+const DEFAULT_OPERATION_TIMEOUT_MS = 120000;
+const CODEX_OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
+const APP_SETTINGS_STORAGE_KEY = 'pic2code_app_settings';
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  temperature: 0.1,
+  quality: 'exact',
+  showLineNumbers: true,
+  customApiKey: '',
+  openRouterApiKey: '',
+  model: 'gemini-3-pro-preview',
+  provider: 'gemini',
+};
+
+const loadStoredAppSettings = (): AppSettings => {
+  if (typeof window === 'undefined') {
+    return DEFAULT_APP_SETTINGS;
+  }
+
+  try {
+    const raw = localStorage.getItem(APP_SETTINGS_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_APP_SETTINGS;
+    }
+
+    const parsed = JSON.parse(raw) as Partial<AppSettings>;
+    return {
+      ...DEFAULT_APP_SETTINGS,
+      ...parsed,
+    };
+  } catch {
+    return DEFAULT_APP_SETTINGS;
+  }
+};
 
 // Script injected for Inspector Mode
 const INSPECTOR_SCRIPT = `
@@ -183,15 +222,7 @@ function App() {
   const [isRefining, setIsRefining] = useState(false);
   const [extractedColors, setExtractedColors] = useState<string[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [appSettings, setAppSettings] = useState<AppSettings>({
-    temperature: 0.1,
-    quality: 'exact',
-    showLineNumbers: true,
-    customApiKey: '',
-    openRouterApiKey: '',
-    model: 'gemini-3-pro-preview',
-    provider: 'gemini'
-  });
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadStoredAppSettings());
   const [isPlayingResponsive, setIsPlayingResponsive] = useState(false);
   const [isInspectorActive, setIsInspectorActive] = useState(false);
   const [isDesignMode, setIsDesignMode] = useState(false);
@@ -207,11 +238,20 @@ function App() {
   const [toast, setToast] = useState<{message: string, type: ToastType, isVisible: boolean}>({
     message: '', type: 'info', isVisible: false
   });
+  const [operationStartedAt, setOperationStartedAt] = useState<number | null>(null);
+  const [operationElapsedSeconds, setOperationElapsedSeconds] = useState(0);
+  const [processingLogs, setProcessingLogs] = useState<ProcessingLogItem[]>([]);
+  const [activeLogRequestId, setActiveLogRequestId] = useState<string | null>(null);
+  const [isLogPollingActive, setIsLogPollingActive] = useState(false);
 
   const historyFileInputRef = useRef<HTMLInputElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const remixMenuRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const operationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortReasonRef = useRef<'user' | 'timeout' | null>(null);
+  const activeOperationTokenRef = useRef(0);
+  const gatewayLogKeysRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setIsVisible(true);
@@ -267,23 +307,16 @@ function App() {
   }, [history]);
 
   useEffect(() => {
+    localStorage.setItem(APP_SETTINGS_STORAGE_KEY, JSON.stringify(appSettings));
+  }, [appSettings]);
+
+  useEffect(() => {
     if (image) {
       extractColors(image.preview).then(setExtractedColors).catch(console.error);
     } else {
       setExtractedColors([]);
     }
   }, [image]);
-
-  useEffect(() => {
-    // Trigger confetti on successful generation
-    if (status === AppStatus.SUCCESS && !isRefining && !generatedCode.includes('Design Mode')) {
-      confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
-    }
-  }, [status]);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
@@ -299,11 +332,291 @@ function App() {
     return () => clearInterval(interval);
   }, [isPlayingResponsive, previewWidth]);
 
+  useEffect(() => {
+    if (operationStartedAt == null) {
+      setOperationElapsedSeconds(0);
+      return;
+    }
+
+    setOperationElapsedSeconds(Math.max(0, Math.floor((Date.now() - operationStartedAt) / 1000)));
+    const interval = setInterval(() => {
+      setOperationElapsedSeconds(Math.max(0, Math.floor((Date.now() - operationStartedAt) / 1000)));
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [operationStartedAt]);
+
+  const appendProcessingLog = (
+    source: 'ui' | 'gateway',
+    level: ProcessingLogItem['level'],
+    title: string,
+    detail?: string,
+  ) => {
+    setProcessingLogs((prev) => [
+      ...prev,
+      {
+        id: `${source}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        ts: new Date().toISOString(),
+        source,
+        level,
+        title,
+        detail,
+      },
+    ]);
+  };
+
+  const beginProcessingLogSession = (requestId: string) => {
+    gatewayLogKeysRef.current.clear();
+    setProcessingLogs([]);
+    setActiveLogRequestId(requestId);
+    setIsLogPollingActive(true);
+  };
+
+  const beginUiOnlyLogSession = () => {
+    gatewayLogKeysRef.current.clear();
+    setProcessingLogs([]);
+    setActiveLogRequestId(null);
+    setIsLogPollingActive(false);
+  };
+
+  const endProcessingLogSession = () => {
+    window.setTimeout(() => {
+      setIsLogPollingActive(false);
+    }, 4000);
+  };
+
+  const mapGatewayLogToItem = (log: any): ProcessingLogItem => {
+    let title = log.event || 'gateway_event';
+    let detail = '';
+    let level: ProcessingLogItem['level'] = log.level === 'error' ? 'error' : 'info';
+    let stage: string | undefined;
+    const preview = typeof log.details?.preview === 'string' ? log.details.preview : '';
+    const text = typeof log.details?.text === 'string' ? log.details.text : '';
+
+    switch (log.event) {
+      case 'request_start':
+        title = '网关已接收请求';
+        detail = `provider=${log.provider || '-'} model=${log.model || '-'} operation=${log.operation || '-'}`;
+        stage = 'prepare';
+        break;
+      case 'request_complete':
+        title = '网关请求完成';
+        level = 'success';
+        detail = `耗时 ${Math.round((log.durationMs || 0) / 1000)} 秒，输出 ${log.outputLength || 0} 字符`;
+        stage = 'finalize';
+        break;
+      case 'request_error':
+        title = '网关请求失败';
+        detail = log.message || '未知错误';
+        level = 'error';
+        stage = 'finalize';
+        break;
+      case 'request_aborted':
+        title = '网关请求中止';
+        detail = `已写出 ${log.outputLength || 0} 字符`;
+        level = 'error';
+        stage = 'finalize';
+        break;
+      case 'claude_query_start':
+        title = 'Claude Code SDK 开始处理';
+        detail = `model=${log.model || '-'} toolCount=${log.details?.toolCount ?? 0}`;
+        stage = 'reasoning';
+        break;
+      case 'claude_query_complete':
+        title = 'Claude Code SDK 处理完成';
+        detail = `耗时 ${Math.round((log.durationMs || 0) / 1000)} 秒，输出 ${log.outputLength || 0} 字符`;
+        level = 'success';
+        stage = 'finalize';
+        break;
+      case 'claude_query_error':
+        title = 'Claude Code SDK 处理失败';
+        detail = log.message || '未知错误';
+        level = 'error';
+        stage = 'finalize';
+        break;
+      case 'codex_query_start':
+        title = 'Codex CLI 开始处理';
+        detail = `model=${log.model || '-'} imageCount=${log.details?.imageCount ?? 0}`;
+        stage = 'prepare';
+        break;
+      case 'codex_query_complete':
+        title = 'Codex CLI 处理完成';
+        detail = `耗时 ${Math.round((log.durationMs || 0) / 1000)} 秒，输出 ${log.outputLength || 0} 字符`;
+        level = 'success';
+        stage = 'finalize';
+        break;
+      case 'codex_query_error':
+        title = 'Codex CLI 处理失败';
+        detail = log.message || '未知错误';
+        level = 'error';
+        stage = 'finalize';
+        break;
+      case 'codex_phase':
+        title = typeof log.message === 'string' ? log.message : 'Codex CLI 阶段事件';
+        stage = log.details?.phase || 'prepare';
+        if (stage === 'build_prompt') {
+          title = '已构建完整提示词';
+          detail = [
+            typeof log.details?.promptLength === 'number' ? `promptLength: ${log.details.promptLength}` : '',
+            typeof log.details?.systemPrompt === 'string' ? `systemPrompt:\n${log.details.systemPrompt}` : '',
+            typeof log.details?.userPrompt === 'string' ? `userPrompt:\n${log.details.userPrompt}` : '',
+            typeof log.details?.fullPrompt === 'string' ? `fullPrompt:\n${log.details.fullPrompt}` : '',
+          ].filter(Boolean).join('\n\n');
+        } else {
+          detail = Object.entries(log.details || {})
+            .filter(([key]) => key !== 'phase' && key !== 'heartbeat')
+            .map(([key, value]) => `${key}: ${value}`)
+            .join('\n');
+        }
+        break;
+      case 'codex_cli_event':
+        title = typeof log.message === 'string' ? log.message : 'Codex CLI 内部步骤';
+        stage = log.details?.phase || 'tooling';
+        if (stage === 'session') {
+          title = '已建立 Codex 会话';
+          detail = log.details?.threadId ? `threadId: ${log.details.threadId}` : '';
+        } else if (stage === 'reasoning') {
+          title = '正在分析截图结构';
+          detail = 'Codex 正在理解页面布局、分区层级和主要组件关系。';
+        } else if (stage === 'generation') {
+          if (preview.includes('布局') || preview.includes('拆解') || preview.includes('结构')) {
+            title = '正在规划页面结构';
+          } else {
+            title = '正在输出页面代码';
+          }
+
+          detail = [
+            typeof log.details?.textLength === 'number' ? `textLength: ${log.details.textLength}` : '',
+            text ? `text:\n${text}` : '',
+            !text && preview ? `preview: ${preview}` : '',
+          ].filter(Boolean).join('\n');
+        } else if (stage === 'tooling') {
+          title = '正在处理内部步骤';
+          detail = typeof log.details?.itemType === 'string'
+            ? `itemType: ${log.details.itemType}`
+            : '';
+        } else if (stage === 'finalize') {
+          title = '本轮推理完成';
+          detail = [
+            typeof log.details?.inputTokens === 'number' ? `inputTokens: ${log.details.inputTokens}` : '',
+            typeof log.details?.cachedInputTokens === 'number' ? `cachedInputTokens: ${log.details.cachedInputTokens}` : '',
+            typeof log.details?.outputTokens === 'number' ? `outputTokens: ${log.details.outputTokens}` : '',
+          ].filter(Boolean).join('\n');
+        } else {
+          detail = Object.entries(log.details || {})
+            .filter(([key]) => key !== 'eventType' && key !== 'phase')
+            .map(([key, value]) => `${key}: ${value}`)
+            .join('\n');
+        }
+        break;
+      case 'codex_stream_text':
+        title = 'Codex 姝ｅ湪娴佸紡杈撳嚭鍐呭';
+        stage = log.details?.phase || 'generation';
+        detail = [
+          typeof log.details?.chunkLength === 'number' ? `chunkLength: ${log.details.chunkLength}` : '',
+          text ? `text:\n${text}` : '',
+        ].filter(Boolean).join('\n');
+        break;
+      default:
+        detail = log.message || '';
+        break;
+    }
+
+    return {
+      id: `${log.seq || `${log.requestId || 'no-request'}-${log.ts}-${log.event}`}`,
+      ts: log.ts || new Date().toISOString(),
+      source: 'gateway',
+      level,
+      title,
+      detail,
+      stage,
+    };
+  };
+
+  useEffect(() => {
+    if (!activeLogRequestId || !isLogPollingActive) return;
+
+    let cancelled = false;
+
+    const fetchLogs = async () => {
+      try {
+        const response = await fetch(`/api/ai/logs?requestId=${encodeURIComponent(activeLogRequestId)}&limit=120`);
+        const data = await response.json();
+        if (!response.ok || !data.ok || cancelled || !Array.isArray(data.logs)) {
+          return;
+        }
+
+        const newItems: ProcessingLogItem[] = [];
+        for (const log of data.logs) {
+          const key = `${log.seq || `${log.requestId || 'no-request'}-${log.ts}-${log.event}`}`;
+          if (gatewayLogKeysRef.current.has(key)) {
+            continue;
+          }
+          gatewayLogKeysRef.current.add(key);
+          newItems.push(mapGatewayLogToItem(log));
+        }
+
+        if (newItems.length > 0) {
+          setProcessingLogs((prev) => [...prev, ...newItems]);
+        }
+      } catch {
+        // 忽略日志轮询错误，避免影响主流程
+      }
+    };
+
+    fetchLogs();
+    const interval = window.setInterval(fetchLogs, 1500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeLogRequestId, isLogPollingActive]);
+
+  useEffect(() => {
+    if (!activeLogRequestId || !isLogPollingActive || typeof window === 'undefined' || !('EventSource' in window)) {
+      return;
+    }
+
+    let closed = false;
+    const eventSource = new EventSource(`/api/ai/logs/stream?requestId=${encodeURIComponent(activeLogRequestId)}&limit=5`);
+
+    eventSource.onmessage = (event) => {
+      if (closed || !event.data) {
+        return;
+      }
+
+      try {
+        const log = JSON.parse(event.data);
+        const key = `${log.seq || `${log.requestId || 'no-request'}-${log.ts}-${log.event}`}`;
+        if (gatewayLogKeysRef.current.has(key)) {
+          return;
+        }
+
+        gatewayLogKeysRef.current.add(key);
+        setProcessingLogs((prev) => [...prev, mapGatewayLogToItem(log)]);
+      } catch {
+        // 蹇界暐鍗曟潯 SSE 鏃ュ織瑙ｆ瀽閿欒
+      }
+    };
+
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+
+    return () => {
+      closed = true;
+      eventSource.close();
+    };
+  }, [activeLogRequestId, isLogPollingActive]);
+
   // Sync inspector/design/wireframe mode state with iframe
   useEffect(() => {
     if (!iframeRef.current || !iframeRef.current.contentWindow) return;
     
     const win = iframeRef.current.contentWindow;
+    const body = win.document?.body;
+    if (!body) return;
     
     // Design Mode
     if (isDesignMode) {
@@ -315,17 +628,17 @@ function App() {
     
     // Inspector Mode
     if (isInspectorActive) {
-      win.document.body.setAttribute('data-mode', 'inspector');
+      body.setAttribute('data-mode', 'inspector');
       setIsDesignMode(false);
     } else {
-      if (!isDesignMode) win.document.body.removeAttribute('data-mode');
+      if (!isDesignMode) body.removeAttribute('data-mode');
     }
 
     // Wireframe Mode
     if (isWireframeMode) {
-       win.document.body.classList.add('wireframe-mode');
+       body.classList.add('wireframe-mode');
     } else {
-       win.document.body.classList.remove('wireframe-mode');
+       body.classList.remove('wireframe-mode');
     }
 
   }, [isDesignMode, isInspectorActive, isWireframeMode, generatedCode]);
@@ -341,11 +654,107 @@ function App() {
     return text;
   };
 
+  const getOperationTimeoutMs = (provider: AppSettings['provider']) =>
+    provider === 'codex-cli' ? CODEX_OPERATION_TIMEOUT_MS : DEFAULT_OPERATION_TIMEOUT_MS;
+
+  const getLoadingHint = (provider: AppSettings['provider'], hasImage: boolean) => {
+    if (provider === 'codex-cli' && hasImage) {
+      return `Codex CLI 图片生成通常需要 10 到 30 分钟，请保持页面打开。已等待 ${operationElapsedSeconds} 秒。`;
+    }
+
+    if (provider === 'codex-cli') {
+      return `Codex CLI 正在生成代码，通常会比其他渠道更慢。已等待 ${operationElapsedSeconds} 秒。`;
+    }
+
+    if (provider === 'claude-agent' && hasImage) {
+      return `Claude Code SDK 正在处理图片和提示词，请稍候。已等待 ${operationElapsedSeconds} 秒。`;
+    }
+
+    return `AI 正在生成代码，请稍候。已等待 ${operationElapsedSeconds} 秒。`;
+  };
+
+  const clearOperationTimeout = () => {
+    if (operationTimeoutRef.current) {
+      clearTimeout(operationTimeoutRef.current);
+      operationTimeoutRef.current = null;
+    }
+  };
+
+  const isCurrentOperation = (token: number) => activeOperationTokenRef.current === token;
+
+  const beginOperation = (provider: AppSettings['provider'] = appSettings.provider) => {
+    if (abortControllerRef.current) {
+      abortReasonRef.current = 'user';
+      abortControllerRef.current.abort();
+    }
+
+    clearOperationTimeout();
+    activeOperationTokenRef.current += 1;
+    const token = activeOperationTokenRef.current;
+    abortReasonRef.current = null;
+    setOperationStartedAt(Date.now());
+
+    const controller = new AbortController();
+    const timeoutMs = getOperationTimeoutMs(provider);
+    abortControllerRef.current = controller;
+    operationTimeoutRef.current = setTimeout(() => {
+      if (!isCurrentOperation(token)) return;
+      abortReasonRef.current = 'timeout';
+      controller.abort();
+    }, timeoutMs);
+
+    return { controller, token };
+  };
+
+  const finishOperation = (token: number, controller: AbortController) => {
+    if (!isCurrentOperation(token) || abortControllerRef.current !== controller) {
+      return;
+    }
+    clearOperationTimeout();
+    abortControllerRef.current = null;
+    abortReasonRef.current = null;
+    setOperationStartedAt(null);
+  };
+
+  const resolveErrorMessage = (
+    error: unknown,
+    fallback: string,
+    provider: AppSettings['provider'] = appSettings.provider,
+  ) => {
+    if (abortReasonRef.current === 'timeout') {
+      if (provider === 'codex-cli') {
+        return 'Codex CLI 请求超时。当前已放宽到 30 分钟，若仍超时，建议简化页面复杂度或减少图片范围后重试。';
+      }
+
+      return '请求超时，请简化需求或稍后重试。';
+    }
+
+    if (error instanceof Error) {
+      const message = error.message.trim();
+      if (!message) return fallback;
+
+      if (message.includes('API Key')) {
+        return 'API Key 不可用，请检查设置或本地网关配置。';
+      }
+
+      if (message.includes('网关') || message.includes('OpenRouter') || message.includes('Gemini')) {
+        return message;
+      }
+
+      return message;
+    }
+
+    return fallback;
+  };
+
   const handleStop = () => {
     if (abortControllerRef.current) {
+      abortReasonRef.current = 'user';
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    clearOperationTimeout();
+    setOperationStartedAt(null);
     setStatus(AppStatus.IDLE);
     setIsRefining(false);
     setIsExplaining(false);
@@ -355,9 +764,12 @@ function App() {
   const handleGenerate = async () => {
     if (!image && !prompt) return;
 
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    const operationProvider = appSettings.provider;
+    const requestId = crypto.randomUUID();
+    const { controller, token } = beginOperation(operationProvider);
+    beginProcessingLogSession(requestId);
+    appendProcessingLog('ui', 'info', '开始生成', `渠道：${operationProvider}${image ? '，已附加图片' : '，纯文本模式'}`);
+    appendProcessingLog('ui', 'info', '准备请求', prompt ? `提示词长度 ${prompt.length} 字符` : '未填写额外提示词');
 
     setStatus(AppStatus.LOADING);
     setError(null);
@@ -367,7 +779,7 @@ function App() {
     setFlutterCode("");
     setReactNativeExpoCode("");
     setReactNativeCliCode("");
-    setViewMode('preview');
+    setViewMode('code');
     setIsCompareMode(false);
 
     try {
@@ -380,17 +792,43 @@ function App() {
       // If no image, default to creative mode implicitly
       const effectiveSettings = !image ? { ...appSettings, quality: 'creative' } : appSettings;
 
-      const code = await generateCode(
+      let streamedCode = '';
+
+      for await (const chunk of streamGenerateCode(
         image?.base64 || null, 
         image?.type || null, 
         finalPrompt, 
         effectiveSettings as AppSettings,
-        controller.signal
-      );
-      
-      const cleanedCode = cleanMarkdown(code);
+        controller.signal,
+        requestId
+      )) {
+        if (!isCurrentOperation(token)) {
+          return;
+        }
+
+        if (chunk.type === 'error') {
+          appendProcessingLog('ui', 'error', '生成失败', chunk.content);
+          throw new Error(chunk.content);
+        }
+
+        if (chunk.type === 'text') {
+          if (streamedCode.length === 0) {
+            appendProcessingLog('ui', 'info', '收到首段响应', chunk.requestId ? `Request ID: ${chunk.requestId}` : undefined);
+          }
+          streamedCode += chunk.content;
+          setGeneratedCode(cleanMarkdown(streamedCode));
+        }
+      }
+
+      const cleanedCode = cleanMarkdown(streamedCode);
+      if (!cleanedCode.trim()) {
+        throw new Error('模型没有返回代码内容。');
+      }
+
       setGeneratedCode(cleanedCode);
       setStatus(AppStatus.SUCCESS);
+      setViewMode('preview');
+      appendProcessingLog('ui', 'success', '生成完成', `共生成 ${cleanedCode.length} 个字符`);
       
       const newItem: HistoryItem = {
         id: Date.now().toString(),
@@ -402,14 +840,35 @@ function App() {
       setHistory(prev => [newItem, ...prev]);
 
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        setStatus(AppStatus.IDLE);
+      if (!isCurrentOperation(token)) {
         return;
       }
-      setError("Failed to generate code. Please try again or check your API key.");
+
+        if (err.name === 'AbortError') {
+        if (abortReasonRef.current === 'timeout') {
+          const timeoutMessage = resolveErrorMessage(err, '请求超时，请稍后重试。', operationProvider);
+          setError(timeoutMessage);
+          setStatus(AppStatus.ERROR);
+          showToast(timeoutMessage, 'error');
+          appendProcessingLog('ui', 'error', '请求超时', timeoutMessage);
+        } else {
+          setStatus(AppStatus.IDLE);
+          appendProcessingLog('ui', 'info', '请求已停止');
+        }
+        return;
+      }
+      const message = resolveErrorMessage(
+        err,
+        'Failed to generate code. Please try again or check your API key.',
+        operationProvider,
+      );
+      setError(message);
       setStatus(AppStatus.ERROR);
+      showToast(message, 'error');
+      appendProcessingLog('ui', 'error', '生成失败', message);
     } finally {
-      abortControllerRef.current = null;
+      finishOperation(token, controller);
+      endProcessingLogSession();
     }
   };
 
@@ -428,20 +887,49 @@ function App() {
   };
 
   const performRefinement = async (instruction: string) => {
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    const operationProvider = appSettings.provider;
+    const requestId = crypto.randomUUID();
+    const { controller, token } = beginOperation(operationProvider);
+    const originalCode = generatedCode;
+    beginProcessingLogSession(requestId);
+    appendProcessingLog('ui', 'info', '开始精修', `渠道：${operationProvider}`);
+    appendProcessingLog('ui', 'info', '应用修改指令', instruction);
 
     setIsRefining(true);
     setError(null);
     setPreviousCode(generatedCode);
+    setViewMode('code');
     // Disable interactive modes during refinement
     setIsDesignMode(false);
     setIsInspectorActive(false);
 
     try {
-      const updatedCode = await refineCode(generatedCode, instruction, appSettings, controller.signal);
-      const cleanedCode = cleanMarkdown(updatedCode);
+      let streamedCode = '';
+
+      for await (const chunk of streamRefineCode(generatedCode, instruction, appSettings, controller.signal, requestId)) {
+        if (!isCurrentOperation(token)) {
+          return;
+        }
+
+        if (chunk.type === 'error') {
+          appendProcessingLog('ui', 'error', '精修失败', chunk.content);
+          throw new Error(chunk.content);
+        }
+
+        if (chunk.type === 'text') {
+          if (streamedCode.length === 0) {
+            appendProcessingLog('ui', 'info', '收到首段精修结果', chunk.requestId ? `Request ID: ${chunk.requestId}` : undefined);
+          }
+          streamedCode += chunk.content;
+          setGeneratedCode(cleanMarkdown(streamedCode));
+        }
+      }
+
+      const cleanedCode = cleanMarkdown(streamedCode);
+      if (!cleanedCode.trim()) {
+        throw new Error('模型没有返回精修结果。');
+      }
+
       setGeneratedCode(cleanedCode);
       // Clear derived code as the base HTML has changed
       setReactCode("");
@@ -451,25 +939,34 @@ function App() {
       setRefinePrompt("");
       setViewMode('preview');
       showToast('Code updated successfully!', 'success');
-      
-      // Trigger mini confetti for refinement
-      confetti({
-        particleCount: 50,
-        spread: 50,
-        origin: { y: 0.6 },
-        colors: ['#6366f1', '#a855f7']
-      });
+      appendProcessingLog('ui', 'success', '精修完成', `共生成 ${cleanedCode.length} 个字符`);
 
     } catch (err: any) {
+      if (!isCurrentOperation(token)) {
+        return;
+      }
+
+      setGeneratedCode(originalCode);
       if (err.name === 'AbortError') {
+        if (abortReasonRef.current === 'timeout') {
+          const timeoutMessage = resolveErrorMessage(err, '精修请求超时，请稍后重试。', operationProvider);
+          setError(timeoutMessage);
+          showToast(timeoutMessage, 'error');
+          appendProcessingLog('ui', 'error', '精修超时', timeoutMessage);
+        }
         setIsRefining(false);
         return;
       }
-      setError("Failed to refine code. Please try again.");
-      showToast('Failed to update code', 'error');
+      const message = resolveErrorMessage(err, 'Failed to refine code. Please try again.', operationProvider);
+      setError(message);
+      showToast(message, 'error');
+      appendProcessingLog('ui', 'error', '精修失败', message);
     } finally {
-      setIsRefining(false);
-      abortControllerRef.current = null;
+      if (isCurrentOperation(token)) {
+        setIsRefining(false);
+      }
+      finishOperation(token, controller);
+      endProcessingLogSession();
     }
   };
 
@@ -479,31 +976,57 @@ function App() {
     setExplanation(null);
     setIsExplaining(true);
     
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    const operationProvider = appSettings.provider;
+    const { controller, token } = beginOperation(operationProvider);
+    beginUiOnlyLogSession();
+    appendProcessingLog('ui', 'info', '开始代码解释', `渠道：${operationProvider}`);
 
     try {
       const result = await explainCode(generatedCode, appSettings, controller.signal);
+      if (!isCurrentOperation(token)) {
+        return;
+      }
       setExplanation(result);
+      appendProcessingLog('ui', 'success', '代码解释完成');
     } catch (e: any) {
+      if (!isCurrentOperation(token)) {
+        return;
+      }
+
       if (e.name === 'AbortError') {
+         if (abortReasonRef.current === 'timeout') {
+           const timeoutMessage = resolveErrorMessage(e, '代码解释超时，请稍后重试。', operationProvider);
+           showToast(timeoutMessage, 'error');
+           appendProcessingLog('ui', 'error', '代码解释超时', timeoutMessage);
+         }
          setIsExplaining(false);
          return;
       }
+      const message = resolveErrorMessage(e, 'Failed to explain code', operationProvider);
       console.error(e);
-      showToast('Failed to explain code', 'error');
+      showToast(message, 'error');
+      appendProcessingLog('ui', 'error', '代码解释失败', message);
     } finally {
-      setIsExplaining(false);
-      abortControllerRef.current = null;
+      if (isCurrentOperation(token)) {
+        setIsExplaining(false);
+      }
+      finishOperation(token, controller);
     }
   };
 
   const handleReset = () => {
     if (abortControllerRef.current) {
+       abortReasonRef.current = 'user';
        abortControllerRef.current.abort();
        abortControllerRef.current = null;
     }
+    activeOperationTokenRef.current += 1;
+    clearOperationTimeout();
+    setOperationStartedAt(null);
+    setActiveLogRequestId(null);
+    setIsLogPollingActive(false);
+    gatewayLogKeysRef.current.clear();
+    setProcessingLogs([]);
     setImage(null);
     setGeneratedCode("");
     setPreviousCode("");
@@ -637,9 +1160,9 @@ function App() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 h-[calc(100vh-140px)] min-h-[600px]">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(320px,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(320px,24rem)_minmax(0,1fr)_minmax(320px,30%)] gap-8 h-[calc(100vh-140px)] min-h-[600px]">
           
-          <section className="lg:col-span-4 xl:col-span-3 flex flex-col gap-6 h-full overflow-y-auto custom-scrollbar" aria-label="Input Configuration">
+          <section className="flex flex-col gap-6 h-full overflow-y-auto custom-scrollbar" aria-label="Input Configuration">
             
             <div className="flex flex-col gap-4 flex-shrink-0">
                <div className="bg-[#161b22] p-1 rounded-xl border border-gray-800 shadow-sm relative">
@@ -800,7 +1323,7 @@ function App() {
             )}
           </section>
 
-          <section className="lg:col-span-8 xl:col-span-9 h-full flex flex-col min-h-[500px]" aria-label="Output Preview">
+          <section className="h-full flex flex-col min-h-[500px] min-w-0" aria-label="Output Preview">
             
             {(generatedCode || status === AppStatus.LOADING) && (
               <div className="flex items-center justify-between mb-3 p-2 bg-[#161b22] border border-gray-800 rounded-lg">
@@ -819,7 +1342,7 @@ function App() {
                   </button>
                   <button
                     onClick={() => setViewMode('code')}
-                    disabled={status === AppStatus.LOADING}
+                    disabled={status === AppStatus.LOADING && !generatedCode}
                     className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                       viewMode === 'code' 
                         ? 'bg-indigo-600 text-white shadow-sm' 
@@ -830,6 +1353,13 @@ function App() {
                     Code
                   </button>
                 </div>
+
+                {status === AppStatus.LOADING && (
+                  <div className="hidden md:flex items-center gap-2 text-xs text-indigo-300 bg-indigo-500/10 border border-indigo-500/20 px-3 py-1.5 rounded-md max-w-[420px]">
+                    <Clock className="w-3.5 h-3.5 animate-pulse" />
+                    <span>{getLoadingHint(appSettings.provider, !!image)}</span>
+                  </div>
+                )}
 
                 {viewMode === 'preview' && status === AppStatus.SUCCESS && (
                   <div className="flex items-center gap-4">
@@ -983,8 +1513,13 @@ function App() {
             )}
 
             <div className="flex-1 relative bg-[#0d1117] rounded-xl border border-gray-800 shadow-2xl overflow-hidden group flex flex-col">
-             {status === AppStatus.LOADING ? (
-               <SkeletonLoader />
+             {status === AppStatus.LOADING && !generatedCode ? (
+               <div className="relative h-full">
+                 <SkeletonLoader />
+                 <div className="absolute left-4 right-4 bottom-4 rounded-lg border border-indigo-500/20 bg-[#161b22]/90 backdrop-blur px-4 py-3 text-sm text-indigo-200">
+                   {getLoadingHint(appSettings.provider, !!image)}
+                 </div>
+               </div>
              ) : generatedCode ? (
                <>
                  <div className="flex-1 overflow-hidden relative bg-[#0d1117]">
@@ -1137,6 +1672,13 @@ function App() {
               </div>
             )}
           </section>
+
+          <ProcessingLogPanel
+            logs={processingLogs}
+            requestId={activeLogRequestId}
+            isRunning={status === AppStatus.LOADING || isRefining || isExplaining}
+            elapsedSeconds={operationElapsedSeconds}
+          />
 
         </div>
       </main>
